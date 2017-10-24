@@ -130,8 +130,8 @@ class Encoder(nn.Module):
                 break
             if self.activation == "relu":
                 state = F.relu(state)
-                if mask is not None:
-                    state = torch.mul(state, mask)
+            if mask is not None:
+                state = torch.mul(state, mask)
         return [f(state, mask) for f in self.embeddings]
     
 class Decoder(nn.Module):
