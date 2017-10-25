@@ -1,6 +1,6 @@
 from __future__ import print_function, absolute_import
 
-import exchangable_tensor.layers
+import exchangable_tensor.models
 from exchangable_tensor.losses import mse, ce, softmax
 from data import df_to_matrix, get_mask, to_indicator, to_number
 import pandas as pd
@@ -10,8 +10,8 @@ import torch.nn as nn
 import numpy as np
 
 
-Encoder = exchangable_tensor.layers.Encoder
-Decoder = exchangable_tensor.layers.Decoder
+Encoder = exchangable_tensor.models.Encoder
+Decoder = exchangable_tensor.models.Decoder
 
 r_cols = ['user_id', 'movie_id', 'rating', 'unix_timestamp']
 train = pd.read_csv("./data/ml-100k/u1.base", sep="\t", names=r_cols, encoding='latin-1')

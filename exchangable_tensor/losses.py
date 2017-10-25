@@ -1,5 +1,7 @@
 import torch
 
+EPS = 1e-16
+
 def mse(predicted, target, mask=None):
     if mask is not None:
         return torch.sum(torch.pow(predicted - target, 2) * mask) / torch.sum(mask)
@@ -14,7 +16,7 @@ def softmax(x, dim=-1):
 def ce(predicted, target, mask=None):
     if mask is not None:
         #print(softmax(predicted))
-        return torch.sum(-target * torch.log(softmax(predicted)) * mask)/ torch.sum(mask)
+        return torch.sum(-target * torch.log(EPS + softmax(predicted)) * mask)/ torch.sum(mask)
     else:
         return torch.mean(target * torch.log(softmax(predicted)))
 
