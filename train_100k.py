@@ -26,8 +26,8 @@ valid_mask = get_mask(validation)
 def prep_var(x):
     return Variable(torch.from_numpy(x))
 
-enc = Encoder(5, [10, 10], functions="mean", embedding_pool="mean")
-dec = Decoder(10*2, [5], functions="mean")
+enc = Encoder(5, [32, 16], functions="mean", embedding_pool="mean")
+dec = Decoder(16*2, [16, 5], functions="mean")
 
 pars = [i for i in enc.parameters()] + [i for i in dec.parameters()]
 for p in pars:
