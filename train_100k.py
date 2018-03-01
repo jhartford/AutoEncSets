@@ -8,7 +8,7 @@ import torch
 from torch.autograd import Variable
 import torch.nn as nn
 import numpy as np
-
+CUDA = True
 
 Encoder = exchangable_tensor.models.Encoder
 Decoder = exchangable_tensor.models.Decoder
@@ -24,10 +24,16 @@ valid_id = to_indicator(validation)
 valid_mask = get_mask(validation)
 
 def prep_var(x):
-    return Variable(torch.from_numpy(x))
+    v = Variable(torch.from_numpy(x))
+    if CUDA:
+        v = v.cuda()
+    return v
 
-enc = Encoder(5, [32, 16], functions="mean", embedding_pool="mean")
-dec = Decoder(16*2, [16, 5], functions="mean")
+enc = Encoder(5, [14, 5], functions="max", embedding_pool="mean")
+dec = Decoder(5*2, [14, 5], functions="mean")
+if CUDA:
+    enc.cuda()
+    dec.cuda()
 
 pars = [i for i in enc.parameters()] + [i for i in dec.parameters()]
 for p in pars:
@@ -47,7 +53,10 @@ valid_id = prep_var(valid_id)
 
 def expected_val(pred):
     n, m, d = pred.size()
-    return torch.mm(softmax(pred).view((n*m, d)), Variable(torch.arange(1,6)).view((5,1))).view((n,m, 1))
+    p = Variable(torch.arange(1,6)).view((5,1))
+    if CUDA:
+        p = p.cuda()
+    return torch.mm(softmax(pred).view((n*m, d)), p).view((n,m, 1)) 
 
 epochs = 1000
 for ep in xrange(epochs):

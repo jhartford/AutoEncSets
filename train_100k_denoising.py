@@ -38,15 +38,15 @@ valid_mask = get_mask(validation)
 def prep_var(x):
     return Variable(torch.from_numpy(x))
 
-dec = DenoisingAE(5, [20, 20, 5], functions="mean")
+dec = DenoisingAE(5, [50, 50, 5], functions="mean")
 
 for p in dec.parameters():
     if len(p.size()) > 1:
         nn.init.normal(p,std=0.001)
     else:
-       nn.init.constant(p, 0.01)
+       nn.init.constant(p, 0.1)
 
-optimizer = torch.optim.Adam(dec.parameters(), lr=0.0001)
+optimizer = torch.optim.Adam(dec.parameters(), lr=0.00005)
 
 train_x = prep_var(train)
 train_mask = prep_var(train_mask[:, :, None])
@@ -60,7 +60,7 @@ def expected_val(pred):
     return torch.mm(softmax(pred).view((n*m, d)), Variable(torch.arange(1,6)).view((5,1))).view((n,m, 1))
 
 epochs = 1000
-retain_p = 0.5
+retain_p = 0.8
 for ep in xrange(epochs):
     optimizer.zero_grad()
     #print(train_id.size(), train_mask.size())

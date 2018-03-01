@@ -1,6 +1,16 @@
 from scipy.sparse import csr_matrix
 import numpy as np
 
+from torch.utils.data import Dataset
+from torch.utils.data.dataloader import default_collate
+from torch.autograd import Variable
+import torch
+
+def prep(x, dtype="float32"):
+    if dtype is not None:
+        x = np.array(x, dtype=dtype)
+    return Variable(torch.from_numpy(x), requires_grad=False)
+
 def df_to_matrix(df, users, movies):
     row = df.user_id - 1
     col = df.movie_id - 1
@@ -20,3 +30,67 @@ def to_number(mat):
     out = (np.argmax(mat, axis=2).reshape((mat.shape[0], mat.shape[1], 1)))
     out[mat.sum(axis=2) > 0] += 1
     return np.array(out, dtype="float32")
+
+def reindex_mask(mask):
+    index = np.zeros_like(mask)
+    for c in [0, 1]:
+        _, index[:, c] = np.unique(mask[:,c], return_inverse=True)
+    return index
+
+def re_mask(*args):
+    lengths = [m.shape[0] for m in args]
+    merged = np.concatenate(args, axis=0)
+    ids = reindex_mask(merged)
+    mask_ids = []
+    k = 0
+    for l in lengths:
+        mask_ids.append((k, k+l))
+        k += l
+    return [ids[i:j, :] for i, j in mask_ids]
+
+def collate_fn(sample):
+    sample = default_collate(sample)
+    mask, = re_mask(sample["mask"].numpy()) # reindex mask so that we don't overflow
+    return {"mask": torch.from_numpy(mask), 
+            "target": sample["target"], 
+            "input": sample["input"], 
+            "indicator": sample["indicator"]}
+
+class CompletionDataset(Dataset):
+    def __init__(self, values, mask, indicator, one_hot=True, return_test=False, unsorted=False):
+        self.return_test = return_test
+        self.indicator = np.array(indicator, dtype="int32")
+        self.n_train = (indicator != 2).sum()
+        self.n_test = (indicator == 2).sum()
+        
+        self.mask = np.array(mask, dtype="int")
+        self.values = np.array(values, dtype="float32").reshape(mask.shape[0], -1) # ensure 2D
+        if unsorted:
+            # ensure that the values are sorted by indicator so that we only return test values
+            # when return_test is true
+            idx = np.argsort(indicator)
+            self.indicator = self.indicator[idx]
+            self.mask = self.mask[idx,:]
+            self.values = self.values[idx,:]
+
+        self.one_hot = one_hot
+        if one_hot:
+            unique, inv = np.unique(values, return_inverse=True)
+            n_unique = unique.shape[0]
+            self.input = np.zeros((self.values.shape[0], n_unique), dtype="float32")
+            self.input[np.arange(self.values.shape[0]), inv] = 1.
+        else:
+            self.input = self.values[:, None]
+            
+    def __len__(self):
+        if self.return_test:
+            return self.n_train + self.n_test
+        else:
+            return self.n_train
+
+    def __getitem__(self, index):
+        return {"mask": self.mask[index, :], 
+                "input": self.input[index, :], 
+                "target": self.values[index],
+                "indicator": self.indicator[index]}
+

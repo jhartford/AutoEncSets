@@ -35,24 +35,28 @@ class SparsePool(nn.Module):
         Setter for changing the mask. If the mask changes, we recalculate the normalization terms
         and if necessary, resize memory allocation.
         '''
-        print("Calling setter")
         self._mask.data = mask.data
         out_size = mask[:, self.axis].max().data[0] + 1
         if out_size != self.out_size:
             del self.output, self.norm
             self.output = Variable(torch.zeros(out_size, self.out_features), volatile=False)
-            self.norm = torch.zeros_like(mask[:, axis].float())
+            self.norm = Variable(torch.zeros(out_size), volatile=False, requires_grad=False)
+            if mask.data.is_cuda:
+                self.output = self.output.cuda()
+                self.norm = self.norm.cuda()
         
-        self.norm.fill_(0.)
-        self.norm = self.norm.index_add_(0, mask[:, self.axis], torch.ones_like(mask[:, self.axis].float())) + self.eps
+        self.norm = torch.zeros_like(self.norm).index_add_(0, mask[:, self.axis],
+                                         torch.ones_like(mask[:, self.axis].float())) + self.eps
         
     def forward(self, input):
         self.output = torch.zeros_like(self.output)
-        output = torch.zeros_like(self.output).index_add_(0, self.mask[:, self.axis], input)
+        output = torch.zeros_like(self.output).index_add_(0, 
+                                                          self.mask[:, self.axis], 
+                                                          input)
         return torch.index_select(output / self.norm[:, None].float(), 0, self.mask[:, self.axis])
         
 
-        def mean_pool(input, mask, axis=0, out_size=None, keep_dims=True, eps=1e-9):
+def mean_pool(input, mask, axis=0, out_size=None, keep_dims=True, eps=1e-9):
     '''
     Sparse mean pooling. This function performs the same role as the class
     above but is approximately 15% slower. Kept in the code base because it

@@ -25,6 +25,7 @@ def masked_mean(x, dim, mask=None, eps=1e-9):
         out = x_sum / norm
         return out
 
+
 class SetPool(nn.Module):
     '''
     Basic pooling operations. 
