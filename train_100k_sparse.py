@@ -10,13 +10,16 @@ from torch.autograd import Variable
 
 from exchangable_tensor.sp_layers import SparseExchangeable, SparseSequential
 from data import prep, collate_fn, CompletionDataset
-import data.recsys
+
 from data.loader import IndexIterator
 from data.samplers import ConditionalSampler, UniformSampler
+import data.recsys
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--epochs', type=int, help='number of epochs to train for', default=5000)
 parser.add_argument('--nocuda', action='store_true', help='disables cuda')
+parser.add_argument('--sampler', default='uniform', help='Which sampling method to use',
+                                choices=['uniform','conditional'])
 args = parser.parse_args()
 use_cuda = not args.nocuda
 
@@ -122,14 +125,22 @@ def expected_mse(output, target):
     y = (output * values).sum(dim=1)
     return mse(y, target)
 
+if args.sampler == "uniform":
+    samples_per_batch = 80000
+    sampler = UniformSampler(samples_per_batch, data)
+    iters_per_epoch = int(data.n_train / samples_per_batch)
+else:
+    maxN = 400
+    maxM = 400
+    N, M = data.index.max(axis=0) + 1
+    sampler = ConditionalSampler(maxN, maxM, data)
+    iters_per_epoch = int(np.ceil(N//maxN) * np.ceil(M//maxM))
+    
 t = time.time()
-sampler = UniformSampler(80000, data)
-
 for epoch in xrange(args.epochs):
     # Training steps
     enc.train()
-    iterator = IndexIterator(data, 80000, sampler, n_workers=1, 
-                             return_last=True, epochs=1)
+    iterator = IndexIterator(iters_per_epoch, sampler, n_workers=1, epochs=1)
     for sampled_batch in tqdm(iterator):
         sampled_batch, drop = mask_inputs(sampled_batch)
         target = prep_data((sampled_batch["target"] - 1).long())
@@ -141,7 +152,6 @@ for epoch in xrange(args.epochs):
         l = masked_loss(output, target.squeeze(1), drop)
         l.backward()
         optimizer.step()
-    
     # Evaluation
     enc.eval()
     full_batch, drop = mask_inputs(data[np.arange(100000)], 0.)
@@ -153,6 +163,7 @@ for epoch in xrange(args.epochs):
     tqdm.write("%d, %s, %s" % (epoch, l.cpu().data.numpy()[0], 
                            np.sqrt(test_loss.cpu().data.numpy()[0])))
 
+torch.save(enc, '100k_model.pt')
 sec_per_ep = (time.time() - t) / args.epochs
 print("Time per epoch: %1.3f" % (sec_per_ep))
 print("Est total time: %1.3f" % (sec_per_ep * 10000 / 60 / 60))

@@ -6,16 +6,16 @@ from torch.utils.data.dataloader import default_collate
 from torch.autograd import Variable
 import torch
 
-def reindex(index):
+def reindex(input_index):
     '''
-    Rebuild index with minimal unique indices.
+    Rebuild input_index with minimal unique indices.
     e.g. if the true indices are [567, 234, 567, 102]
     then they will be mapped to  [0, 1, 0, 2].
     '''
-    index = np.zeros_like(index)
+    idx = np.zeros_like(input_index)
     for c in [0, 1]:
-        _, index[:, c] = np.unique(index[:,c], return_inverse=True)
-    return index
+        _, idx[:, c] = np.unique(input_index[:,c], return_inverse=True)
+    return idx
 
 def reindex_all(*args):
     '''
@@ -40,6 +40,8 @@ def collate_fn(sample):
             "target": sample["target"], 
             "input": sample["input"], 
             "indicator": sample["indicator"]}
+
+
 
 class CompletionDataset(Dataset):
     '''
@@ -69,7 +71,7 @@ class CompletionDataset(Dataset):
             self.input[np.arange(self.values.shape[0]), inv] = 1.
         else:
             self.input = self.values[:, None]
-            
+
     def __len__(self):
         if self.return_test:
             return self.n_train + self.n_test

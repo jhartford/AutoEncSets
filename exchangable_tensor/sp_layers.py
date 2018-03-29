@@ -13,6 +13,7 @@ class SparsePool(nn.Module):
         self.axis = axis
         self._index = index
         self.out_features = out_features
+        self.keep_dims = keep_dims
         if out_size is None:
             out_size = index[:, axis].max().data[0] + 1
         self.out_size = out_size
@@ -54,7 +55,11 @@ class SparsePool(nn.Module):
         output = torch.zeros_like(self.output).index_add_(0, 
                                                           self.index[:, self.axis], 
                                                           input)
-        return torch.index_select(output / self.norm[:, None].float(), 0, self.index[:, self.axis])
+        if self.keep_dims:
+            return torch.index_select(output / self.norm[:, None].float(), 
+                                      0, self.index[:, self.axis])
+        else:
+            return output / self.norm[:, None].float()
         
 
 def mean_pool(input, index, axis=0, out_size=None, keep_dims=True, eps=1e-9):
