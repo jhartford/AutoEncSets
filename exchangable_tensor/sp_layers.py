@@ -7,11 +7,14 @@ class SparsePool(nn.Module):
     Sparse pooling with lazy memory management. Memory is set with the initial mask, but 
     can be reallocated as needed by changing the mask.
     '''
-    def __init__(self, mask, out_features, axis, out_size=None, keep_dims=True, eps=1e-9):
+    def __init__(self, mask, out_features, axis, out_size=None, keep_dims=True, 
+                 normalize=True, eps=1e-9):
         super(SparsePool, self).__init__()
         self.eps = eps
         self.axis = axis
         self._mask = mask
+        self.normalize = normalize
+        self.keep_dims = keep_dims
         self.out_features = out_features
         if out_size is None:
             out_size = mask[:, axis].max().data[0] + 1
@@ -53,7 +56,15 @@ class SparsePool(nn.Module):
         output = torch.zeros_like(self.output).index_add_(0, 
                                                           self.mask[:, self.axis], 
                                                           input)
-        return torch.index_select(output / self.norm[:, None].float(), 0, self.mask[:, self.axis])
+        
+        if self.normalize:
+            out = output / self.norm[:, None].float()
+        else:
+            out = output
+        if self.keep_dims:
+            return torch.index_select(out, 0, self.mask[:, self.axis])
+        else:
+            return out
         
 
 def mean_pool(input, mask, axis=0, out_size=None, keep_dims=True, eps=1e-9):
@@ -104,13 +115,15 @@ class SparseExchangeable(nn.Module):
         self.col_pool.mask = mask
         self._mask = mask
     
-    def forward(self, input):
-        row_mean = self.row_pool(input)
-        col_mean = self.col_pool(input)
-        both_mean = torch.mean(input, dim=0).expand_as(input)
+    def forward(self, input, row_mean=None, col_mean=None, both_mean=None):
+        if row_mean is None:
+            row_mean = self.row_pool(input)
+        if col_mean is None:
+            col_mean = self.col_pool(input)
+        if both_mean is None:
+            both_mean = torch.mean(input, dim=0).expand_as(input)
         stacked = torch.cat([input, row_mean, col_mean, both_mean], dim=1)
         out = self.activ(self.linear(stacked))
-        del stacked, row_mean, col_mean
         return out
 
 class SparseFactorize(nn.Module):
