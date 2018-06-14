@@ -19,19 +19,47 @@ def to_valid_index(index):
     _, valid_index = np.unique(index, axis=0, return_inverse=True)
     return torch.from_numpy(valid_index)
 
+import numpy as np
+
+def append_features(index, interaction=None, row_values=None, col_values=None, dtype="float32"):
+    '''
+    Append features to the values matrix using the index to map to the correct dimension.
+
+    Used when we have row or column features. Assumes that the index a zero-index (i.e. counts from zero).
+    '''
+    if interaction is None and row_values is None and col_values is None:
+        raise Exception("Must supply at least one value array.")
+    values = np.zeros((index.shape[0], 0), dtype=dtype)
+    if interaction is not None:
+        if len(interaction.shape) == 1:
+            interaction = interaction[:, None]
+        values = np.concatenate([values, interaction], axis=1)
+    if row_values is not None:
+        if len(row_values.shape) == 1:
+            row_values = row_values[:, None]
+        values = np.concatenate([values, row_values[index[:, 0], ...]], axis=1)
+    if col_values is not None:
+        if len(col_values.shape) == 1:
+            col_values = col_values[:, None]
+        values = np.concatenate([values, col_values[index[:, 1], ...]], axis=1)
+    return values
+
 class SparsePool(nn.Module):
     '''
     Sparse pooling with lazy memory management. Memory is set with the initial index, but 
     can be reallocated as needed by changing the index.
     '''
-    def __init__(self, index, out_features, out_size=None, keep_dims=True, eps=1e-9):
+    def __init__(self, index, out_features, axis, out_size=None, keep_dims=True, 
+                 normalize=True, eps=1e-9):
         super(SparsePool, self).__init__()
         self.eps = eps
+        self.axis = axis
         self._index = index
         self.out_features = out_features
         self.keep_dims = keep_dims
+        self.normalize = normalize
         if out_size is None:
-            out_size = index.max().data[0] + 1
+            out_size = index[:, axis].max().data[0] + 1
         self.out_size = out_size
         self.output = Variable(torch.zeros(out_size, out_features), volatile=False)
         
@@ -40,7 +68,7 @@ class SparsePool(nn.Module):
         if index.data.is_cuda:
             self.output = self.output.cuda()
             self.norm = self.norm.cuda()
-        self.norm = self.norm.index_add_(0, index, torch.ones_like(index.float())) + self.eps
+        self.norm = self.norm.index_add_(0, index[:, axis], torch.ones_like(index[:, axis].float())) + self.eps
     
     @property
     def index(self):
@@ -53,7 +81,7 @@ class SparsePool(nn.Module):
         and if necessary, resize memory allocation.
         '''
         self._index = index
-        out_size = index.max().data[0] + 1
+        out_size = index[:, self.axis].max().data[0] + 1
         if out_size != self.out_size:
             del self.output, self.norm
             self.output = Variable(torch.zeros(out_size, self.out_features), volatile=False)
@@ -63,40 +91,68 @@ class SparsePool(nn.Module):
                 self.norm = self.norm.cuda()
             self.out_size = out_size
         
-        self.norm = torch.zeros_like(self.norm).index_add_(0, index,
-                                         torch.ones_like(index.float())) + self.eps
+        self.norm = torch.zeros_like(self.norm).index_add_(0, index[:, self.axis],
+                                         torch.ones_like(index[:, self.axis].float())) + self.eps
         
     def forward(self, input):
         self.output = torch.zeros_like(self.output)
         output = torch.zeros_like(self.output).index_add_(0, 
-                                                          self.index, 
+                                                          self.index[:, self.axis], 
                                                           input)
-        if self.keep_dims:
-            return torch.index_select(output / self.norm[:, None].float(), 
-                                      0, self.index)
+        if self.normalize:
+            output = output / self.norm[:, None].float()
         else:
-            return output / self.norm[:, None].float()
+            output = output
+        
+        if self.keep_dims:
+            return torch.index_select(output, 
+                                      0, self.index[:, self.axis])
+        else:
+            return output
+        
+
+def mean_pool(input, index, axis=0, out_size=None, keep_dims=True, eps=1e-9):
+    '''
+    Sparse mean pooling. This function performs the same role as the class
+    above but is approximately 15% slower. Kept in the codebase because it
+    is much more readable.
+    '''
+    if out_size is None:
+        out_size = index[:, axis].max().data[0] + 1
+    # Sum across values
+    out = Variable(input.data.new(out_size, input.shape[1]).fill_(0.))
+    out = out.index_add_(0, index[:, axis], input)
+    
+    # Normalization
+    norm = Variable(input.data.new(out_size, input.shape[1]).fill_(0.))
+    norm = norm.index_add_(0, index[:, axis], torch.ones_like(input)) + eps
+    if keep_dims:
+        return torch.index_select(out / norm, 0, index[:, axis])
+    else:
+        return out / norm
 
 class SparseExchangeable(nn.Module):
     """
     Sparse exchangable matrix layer
     """
 
-    def __init__(self, in_features, out_features, index, bias=True, axes=None):
+    def __init__(self, in_features, out_features, index, bias=True,
+                 row_pool=True, col_pool=True, both_pool=True):
         super(SparseExchangeable, self).__init__()
         self._index = index
-        self.linear = nn.Linear(in_features=in_features * 4,
+        n_pool = 1 + int(row_pool) + int(col_pool) + int(both_pool)
+        self.linear = nn.Linear(in_features=in_features * n_pool,
                                 out_features=out_features,
                                 bias=bias)
-        pooling_modules = []
-        if axes is None:
-            self.axes = subsets(index.shape[1])
+        if row_pool:
+            self.row_pool = SparsePool(self._index, in_features, 0)
         else:
-            self.axes = axes
-        for axis in self.axes:
-            sub_index = to_valid_index(self._index[:, axis])
-            pooling_modules.append(SparsePool(sub_index, in_features))
-        self.pooling = pooling_modules
+            self.row_pool = None
+        if col_pool:
+            self.col_pool = SparsePool(self._index, in_features, 1)
+        else:
+            self.col_pool = None
+        self.both_pool = both_pool
 
     @property
     def index(self):
@@ -104,15 +160,24 @@ class SparseExchangeable(nn.Module):
     
     @index.setter
     def index(self, index):
-        for module, axis in zip(self.pooling, self.axes):
-            sub_index = to_valid_index(index[:, axis])
-            module.index = sub_index
+        if self.row_pool is not None:
+            self.row_pool.index = index
+        if self.col_pool is not None:
+            self.col_pool.index = index
         self._index = index
     
     def forward(self, input):
-        pooled = [pool_axis(input) for pool_axis in self.pooling]
-        pooled += [torch.mean(input, dim=0).expand_as(input)]
-        stacked = torch.cat([input] + pooled, dim=1)
+        inputs = [input]
+        if self.row_pool is not None:
+            row_mean = self.row_pool(input)
+            inputs.append(row_mean)
+        if self.col_pool is not None:
+            col_mean = self.col_pool(input)
+            inputs.append(col_mean)
+        if self.both_pool:
+            both_mean = torch.mean(input, dim=0).expand_as(input)
+            inputs.append(both_mean)
+        stacked = torch.cat(inputs, dim=1)
         return self.linear(stacked)
 
 class SparseFactorize(nn.Module):
