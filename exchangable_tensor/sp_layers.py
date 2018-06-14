@@ -42,10 +42,9 @@ class SparsePool(nn.Module):
         self.keep_dims = keep_dims
         self.normalize = normalize
         if out_size is None:
-            out_size = index[:, axis].max().data[0] + 1
+            out_size = int(index[:, axis].max() + 1)
         self.out_size = out_size
-        self.output = Variable(torch.zeros(out_size, out_features), volatile=False)
-        
+        self.output = Variable(torch.zeros((out_size, out_features)), volatile=False)
         self.norm = Variable(torch.zeros(out_size), volatile=False, requires_grad=False)
         
         if index.data.is_cuda:
@@ -64,11 +63,11 @@ class SparsePool(nn.Module):
         and if necessary, resize memory allocation.
         '''
         self._index = index
-        out_size = index[:, self.axis].max().data[0] + 1
+        out_size = int(index[:, self.axis].max() + 1)
         if out_size != self.out_size:
             del self.output, self.norm
-            self.output = Variable(torch.zeros(out_size, self.out_features), volatile=False)
-            self.norm = Variable(torch.zeros(out_size), volatile=False, requires_grad=False)
+            self.output = Variable(torch.zeros((out_size, self.out_features)), volatile=False)
+            self.norm = Variable(torch.zeros((out_size)), volatile=False, requires_grad=False)
             if index.data.is_cuda:
                 self.output = self.output.cuda()
                 self.norm = self.norm.cuda()
