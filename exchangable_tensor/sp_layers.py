@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 from itertools import combinations
+import numpy as np
 
 def subsets(n, return_empty=False):
     '''
@@ -18,8 +19,6 @@ def to_valid_index(index):
         index = index.numpy()
     _, valid_index = np.unique(index, axis=0, return_inverse=True)
     return torch.from_numpy(valid_index)
-
-import numpy as np
 
 def append_features(index, interaction=None, row_values=None, col_values=None, dtype="float32"):
     '''
