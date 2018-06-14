@@ -1,6 +1,23 @@
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
+from itertools import combinations
+
+def subsets(n, return_empty=False):
+    '''
+    Get all proper subsets of [0, 1, ..., n]
+    '''
+    sub = [i for j in range(n) for i in combinations(range(n), j)]
+    if return_empty:
+        return sub
+    else:
+        return sub[1:]
+
+def to_valid_index(index):
+    if isinstance(index, torch.tensor):
+        index = index.numpy()
+    _, valid_index = np.unique(index, axis=0, return_inverse=True)
+    return torch.from_numpy(valid_index)
 
 import numpy as np
 
@@ -195,3 +212,25 @@ class SparseSequential(nn.Module):
         for l in self.layers:
             out = l(out)
         return out
+
+# Not used...
+
+def mean_pool(input, index, axis=0, out_size=None, keep_dims=True, eps=1e-9):
+    '''
+    Sparse mean pooling. This function performs the same role as the class
+    above but is approximately 15% slower. Kept in the codebase because it
+    is much more readable.
+    '''
+    if out_size is None:
+        out_size = index[:, axis].max().data[0] + 1
+    # Sum across values
+    out = Variable(input.data.new(out_size, input.shape[1]).fill_(0.))
+    out = out.index_add_(0, index[:, axis], input)
+    
+    # Normalization
+    norm = Variable(input.data.new(out_size, input.shape[1]).fill_(0.))
+    norm = norm.index_add_(0, index[:, axis], torch.ones_like(input)) + eps
+    if keep_dims:
+        return torch.index_select(out / norm, 0, index[:, axis])
+    else:
+        return out / norm
