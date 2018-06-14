@@ -14,33 +14,41 @@ def subsets(n, return_empty=False):
         return sub[1:]
 
 def to_valid_index(index):
-    if isinstance(index, torch.tensor):
-        index = index.numpy()
     _, valid_index = np.unique(index, axis=0, return_inverse=True)
-    return torch.from_numpy(valid_index)
+    return valid_index
+
+def prepare_global_index(index, axes=None):
+    if axes is None:
+        axes = subsets(index.shape[1])
+    return np.concatenate([to_valid_index(index[:, ax])[:, None] for ax in axes], axis=1)
 
 class SparsePool(nn.Module):
     '''
     Sparse pooling with lazy memory management. Memory is set with the initial index, but 
     can be reallocated as needed by changing the index.
+
+    Caching deals with the memory limitations of these models by computing the pooling layers on
+    CPU memory. A typical forward pass still uses batches on the GPU but pools on the CPU 
+    (see SparseExchangable below).
     '''
-    def __init__(self, index, out_features, out_size=None, keep_dims=True, eps=1e-9):
+    def __init__(self, index, out_features, out_size=None, keep_dims=True, eps=1e-9, cache_size=None):
         super(SparsePool, self).__init__()
         self.eps = eps
         self._index = index
         self.out_features = out_features
         self.keep_dims = keep_dims
         if out_size is None:
-            out_size = index.max().data[0] + 1
+            out_size = int(index.max() + 1)
         self.out_size = out_size
         self.output = Variable(torch.zeros(out_size, out_features), volatile=False)
         
         self.norm = Variable(torch.zeros(out_size), volatile=False, requires_grad=False)
         
-        if index.data.is_cuda:
-            self.output = self.output.cuda()
-            self.norm = self.norm.cuda()
+        #if index.data.is_cuda:
+        self.output = self.output.to(index.device)
+        self.norm = self.norm.to(index.device)
         self.norm = self.norm.index_add_(0, index, torch.ones_like(index.float())) + self.eps
+        self.cache_size = cache_size
     
     @property
     def index(self):
@@ -53,7 +61,7 @@ class SparsePool(nn.Module):
         and if necessary, resize memory allocation.
         '''
         self._index = index
-        out_size = index.max().data[0] + 1
+        out_size = int(index.max() + 1)
         if out_size != self.out_size:
             del self.output, self.norm
             self.output = Variable(torch.zeros(out_size, self.out_features), volatile=False)
@@ -66,14 +74,51 @@ class SparsePool(nn.Module):
         self.norm = torch.zeros_like(self.norm).index_add_(0, index,
                                          torch.ones_like(index.float())) + self.eps
         
-    def forward(self, input):
+    def zero_cache(self):
+        '''
+        We incrementally compute the pooled representation in batches, so we need a way of clearing
+        the cached representation.
+        '''
+        if self.cache_size is None:
+            raise ValueError("Must specify a cache size if using a cache")
+        self._cache = torch.zeros(self.cache_size, self.out_features)
+        self._cache_norm = torch.zeros(self.cache_size) + self.eps
+        
+    def update_cache(self, input, index):
+        '''
+        Add a batch to the pooled representation
+        '''
+        self._cache = self._cache.index_add_(0, index.cpu(), input.cpu())
+        self._cache_norm = self._cache_norm.index_add_(0, index.cpu(),
+                                            torch.ones_like(index.cpu().float())) + self.eps
+    
+    def get_cache(self, index, keep_dims=True):
+        '''
+        Return the pooled representation.
+        '''
+        output = self._cache / self._cache_norm[:, None].float()
+        if keep_dims:
+            return torch.index_select(output, 0, index.cpu())
+        else:
+            return output
+    
+    def forward(self, input, keep_dims=None, cached=False, index=None):
+        '''
+        Regular forward pass.
+        '''
+        if index is None:
+            index = self.index
+        if keep_dims is None:
+            keep_dims = self.keep_dims
+        if cached:
+            return self.get_cache(index, keep_dims)
         self.output = torch.zeros_like(self.output)
         output = torch.zeros_like(self.output).index_add_(0, 
-                                                          self.index, 
+                                                          index, 
                                                           input)
-        if self.keep_dims:
+        if keep_dims:
             return torch.index_select(output / self.norm[:, None].float(), 
-                                      0, self.index)
+                                      0, index)
         else:
             return output / self.norm[:, None].float()
 
@@ -81,23 +126,43 @@ class SparseExchangeable(nn.Module):
     """
     Sparse exchangable matrix layer
     """
-
-    def __init__(self, in_features, out_features, index, bias=True, axes=None):
+    def __init__(self, in_features, out_features, index, bias=True, cache_size=None):
         super(SparseExchangeable, self).__init__()
         self._index = index
-        self.linear = nn.Linear(in_features=in_features * 4,
+        self.pooling = nn.ModuleList([SparsePool(index[:, i], in_features) for i in range(index.shape[1])])
+        self.linear = nn.Linear(in_features=in_features * (index.shape[1] + 2),
                                 out_features=out_features,
                                 bias=bias)
-        pooling_modules = []
-        if axes is None:
-            self.axes = subsets(index.shape[1])
-        else:
-            self.axes = axes
-        for axis in self.axes:
-            sub_index = to_valid_index(self._index[:, axis])
-            pooling_modules.append(SparsePool(sub_index, in_features))
-        self.pooling = pooling_modules
+        self.in_features = in_features
+        self.out_features = out_features
+        self.cache_size = cache_size
 
+    def zero_cache(self):
+        self._cache = torch.zeros(self.cache_size, self.out_features)
+    
+    def update_cache(self, input, index, batch_size=10000):
+        nnz = index.shape[0] # number of non-zeros
+        cache_sizes = index.cpu().numpy().max(axis=0) + 1
+        batch_size = min(batch_size, nnz)
+        splits = max(nnz // batch_size, 1)
+        for i, p in enumerate(self.pooling):
+            p.cache_size = cache_sizes[i]
+            p.zero_cache()
+        for i in np.split(np.arange(nnz), splits):
+            for j, p in enumerate(self.pooling):
+                p.update_cache(input.cpu()[i, ...], index.cpu()[i, j])
+        pooled = [p.get_cache(index.cpu()[:,i], keep_dims=True) for i, p in enumerate(self.pooling)]
+        pooled += [torch.mean(input.cpu(), dim=0).expand_as(input)]
+        stacked = torch.cat([input.cpu()] + pooled, dim=1)
+        for i in np.split(np.arange(nnz), splits):
+            self._cache[i,...] = self.linear(stacked[i,...].to(self.linear.weight.device)).cpu()
+    
+    def get_cache(self, idx=None):
+        if idx is None:
+            return self._cache
+        else:
+            return self._cache[idx, ...]
+    
     @property
     def index(self):
         return self._index
@@ -148,6 +213,22 @@ class SparseSequential(nn.Module):
         for l in self.layers:
             out = l(out)
         return out
+    
+    def cached_forward(self, input, index, batch_size=10000):
+        with torch.no_grad():
+            state = input
+            for i, layer in enumerate(self.layers):
+                print("layer %d" % i)
+                state.detach()
+                if isinstance(layer, SparseExchangeable):
+                    layer.cache_size = index.shape[0]
+                    layer.zero_cache()
+                    layer.update_cache(state, index, batch_size=batch_size)
+                    state = layer.get_cache()
+                else:
+                    state = layer(state)
+                del layer
+            return state
 
 # Not used...
 
