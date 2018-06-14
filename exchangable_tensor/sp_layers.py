@@ -3,6 +3,31 @@ import torch.nn as nn
 from torch.autograd import Variable
 from itertools import combinations
 
+import numpy as np
+
+def append_features(index, interaction=None, row_values=None, col_values=None, dtype="float32"):
+    '''
+    Append features to the values matrix using the index to map to the correct dimension.
+
+    Used when we have row or column features. Assumes that the index a zero-index (i.e. counts from zero).
+    '''
+    if interaction is None and row_values is None and col_values is None:
+        raise Exception("Must supply at least one value array.")
+    values = np.zeros((index.shape[0], 0), dtype=dtype)
+    if interaction is not None:
+        if len(interaction.shape) == 1:
+            interaction = interaction[:, None]
+        values = np.concatenate([values, interaction], axis=1)
+    if row_values is not None:
+        if len(row_values.shape) == 1:
+            row_values = row_values[:, None]
+        values = np.concatenate([values, row_values[index[:, 0], ...]], axis=1)
+    if col_values is not None:
+        if len(col_values.shape) == 1:
+            col_values = col_values[:, None]
+        values = np.concatenate([values, col_values[index[:, 1], ...]], axis=1)
+    return values
+
 def subsets(n, return_empty=False):
     '''
     Get all proper subsets of [0, 1, ..., n]
