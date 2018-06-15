@@ -160,8 +160,9 @@ for epoch in xrange(args.epochs):
     index = prep_data(full_batch["index"])
     enc.index = index
     test_loss = expected_mse(enc(input)[drop,:], target.squeeze(1).float()[drop])
-    tqdm.write("%d, %s, %s" % (epoch, l.cpu().data.numpy()[0], 
-                           np.sqrt(test_loss.cpu().data.numpy()[0])))
+    tqdm.write("%d, %s, %s" % (epoch, l.cpu().data.numpy(), 
+                           np.sqrt(test_loss.cpu().data.numpy())))
+    torch.cuda.empty_cache()
 
 torch.save(enc, '100k_model.pt')
 sec_per_ep = (time.time() - t) / args.epochs

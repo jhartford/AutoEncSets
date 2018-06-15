@@ -194,9 +194,8 @@ class SparseExchangeable(nn.Module):
     
     @index.setter
     def index(self, index):
-        for module, axis in zip(self.pooling, self.axes):
-            sub_index = to_valid_index(index[:, axis])
-            module.index = sub_index
+        for i, module in enumerate(self.pooling):
+            module.index = index[:, i]
         self._index = index
     
     def forward(self, input):
