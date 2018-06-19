@@ -10,7 +10,7 @@ import torch
 from torch.autograd import Variable
 
 from exchangable_tensor.sp_layers import SparseExchangeable, SparseSequential
-from data import prep, collate_fn, CompletionDataset
+from data import prep, collate_fn, CompletionDataset, reindex
 
 from data.loader import IndexIterator
 from data.samplers import ConditionalSampler, UniformSampler
@@ -78,20 +78,33 @@ def one_hot(values):
     oh[np.arange(values.shape[0]), inv] = 1.
     return oh
 
+softmax = torch.nn.Softmax(dim=1)
+mse = torch.nn.MSELoss()
+values = torch.arange(1,6)[None,:]
+
+def expected_mse(output, target):
+    output = softmax(output)
+    y = (output * values.to(output.device)).sum(dim=1)
+    return mse(y, target)
+
+
 use_cuda = True
 enc = torch.load('100k_model.pt')
+enc.eval()
 if use_cuda:
     enc.cuda()
 data = np.load("data/netflix6m.npz")
 netflix = {}
-netflix['target'] = data['mat_values_all'][0:31500000, ...]
+n = 15000000
+idx = np.random.permutation(np.arange(data['mat_values_all'].shape[0]))[0:n]
+netflix['target'] = data['mat_values_all'][idx, ...]
 netflix["input"] = one_hot(netflix['target'])
-netflix["index"] = data['mask_indices_all'][0:31500000, ...]
-netflix["indicator"] = data['mask_tr_val_split'][0:31500000, ...]
+netflix["index"] = reindex(data['mask_indices_all'][idx, ...])
+netflix["indicator"] = data['mask_tr_val_split'][idx, ...]
 full_batch, drop = mask_inputs(netflix, 0.)
 target = prep_data((full_batch["target"]).long())
 input = prep_data(full_batch["input"])
 index = prep_data(full_batch["index"])
-output = enc.cached_forward(input, index, batch_size=100000)
-test_loss = expected_mse(output[drop,:].cuda(), target.squeeze(1).float()[drop].cuda())
+output = enc.cached_forward(input, index, batch_size=250000)
+test_loss = expected_mse(output[drop,:].cpu(), target.squeeze().float()[drop].cpu())
 print np.sqrt(test_loss.item())
