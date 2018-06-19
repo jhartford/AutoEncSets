@@ -80,9 +80,12 @@ class SparsePool(nn.Module):
     CPU memory. A typical forward pass still uses batches on the GPU but pools on the CPU 
     (see SparseExchangable below).
     '''
-    def __init__(self, index, out_features, out_size=None, keep_dims=True, eps=1e-9, cache_size=None):
+    def __init__(self, index, out_features, out_size=None, keep_dims=True, eps=1e-9, cache_size=None, axis=None):
         super(SparsePool, self).__init__()
         self.eps = eps
+        if axis is not None:
+            index = index[:, axis]
+        self.axis = axis
         self._index = index
         self.out_features = out_features
         self.keep_dims = keep_dims
@@ -107,6 +110,8 @@ class SparsePool(nn.Module):
         Setter for changing the index. If the index changes, we recalculate the normalization terms
         and if necessary, resize memory allocation.
         '''
+        if self.axis is not None:
+            index = index[:, self.axis]
         self._index = index
         out_size = int(index.max() + 1)
         if out_size != self.out_size:
