@@ -5,6 +5,7 @@ from tqdm import tqdm
 import pandas as pd
 import numpy as np
 import torch.nn as nn
+from torch.nn.utils.clip_grad import clip_grad_norm_
 import torch
 from torch.autograd import Variable
 
@@ -17,6 +18,8 @@ import data.recsys
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--epochs', type=int, help='number of epochs to train for', default=5000)
+parser.add_argument('--clip', type=float, help='Gradient clipping: max norm of the gradients', default=1.)
+parser.add_argument('--lr', type=float, help='Learning rate', default=0.01)
 parser.add_argument('--nocuda', action='store_true', help='disables cuda')
 parser.add_argument('--sampler', default='uniform', help='Which sampling method to use',
                                 choices=['uniform','conditional'])
@@ -105,7 +108,7 @@ enc = SparseSequential(index,
                    )
 if use_cuda:
     enc.cuda()
-optimizer = torch.optim.Adam(enc.parameters(), lr=0.005)
+optimizer = torch.optim.Adam(enc.parameters(), lr=args.lr)
 
 # Prepare cross entropy loss
 ce = torch.nn.CrossEntropyLoss(reduce=False)
@@ -151,6 +154,7 @@ for epoch in xrange(args.epochs):
         output = enc(input)
         l = masked_loss(output, target.squeeze(1), drop)
         l.backward()
+        clip_grad_norm_(enc.parameters(), args.clip)
         optimizer.step()
     # Evaluation
     enc.eval()
@@ -160,8 +164,9 @@ for epoch in xrange(args.epochs):
     index = prep_data(full_batch["index"])
     enc.index = index
     test_loss = expected_mse(enc(input)[drop,:], target.squeeze(1).float()[drop])
-    tqdm.write("%d, %s, %s" % (epoch, l.cpu().data.numpy()[0], 
-                           np.sqrt(test_loss.cpu().data.numpy()[0])))
+    tqdm.write("%d, %s, %s" % (epoch, l.cpu().data.numpy(), 
+                           np.sqrt(test_loss.cpu().data.numpy())))
+    torch.cuda.empty_cache()
 
 torch.save(enc, '100k_model.pt')
 sec_per_ep = (time.time() - t) / args.epochs
