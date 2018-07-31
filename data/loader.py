@@ -1,3 +1,4 @@
+from __future__ import print_function
 import numpy as np
 import os
 import time
@@ -79,9 +80,9 @@ if __name__ == '__main__':
         iterator = IndexIterator(1, sampler, n_workers=1, epochs=n)
         t = time.time()
         for i, idx in enumerate(iterator):
-            print i
+            print(i)
             time.sleep(sleep_time)
             pass
         extra = time.time() - t
         ave += extra - (i+1) * sleep_time
-    print "average time per epoch: %1.3f" % (ave / n)
+    print("average time per epoch: %1.3f" % (ave / n))

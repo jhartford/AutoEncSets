@@ -82,7 +82,8 @@ class CompletionDataset(Dataset):
         return {"index": self.index[index, :], 
                 "input": self.input[index, :], 
                 "target": self.values[index],
-                "indicator": self.indicator[index]}
+                "indicator": self.indicator[index],
+                "sample_ids": index}
 
 # Dense implementation functions... (mostly unused)
 

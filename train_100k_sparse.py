@@ -90,21 +90,28 @@ index = prep(data.index, dtype="int")
 if use_cuda:
     index = index.cuda()
 
+units = 100
 # build model
 enc = SparseSequential(index, 
-                       SparseExchangeable(5,150, index), 
+                       SparseExchangeable(5,units, index), 
                        nn.LeakyReLU(),
                        torch.nn.Dropout(p=0.5),
-                       SparseExchangeable(150,150, index),
+                       SparseExchangeable(units,units, index),
                        nn.LeakyReLU(),
                        torch.nn.Dropout(p=0.5),
-                       SparseExchangeable(150,150, index),
+                       SparseExchangeable(units,units, index),
                        nn.LeakyReLU(),
                        torch.nn.Dropout(p=0.5),
-                       SparseExchangeable(150,150, index),
+                       #SparseExchangeable(units,units, index),
+                       #nn.LeakyReLU(),
+                      # torch.nn.Dropout(p=0.5),
+                       #SparseExchangeable(units,units, index),
+                       #nn.LeakyReLU(),
+                       #torch.nn.Dropout(p=0.5),
+                       SparseExchangeable(units,units, index),
                        nn.LeakyReLU(),
                        torch.nn.Dropout(p=0.5),
-                       SparseExchangeable(150,5, index)
+                       SparseExchangeable(units,5, index)
                    )
 if use_cuda:
     enc.cuda()
@@ -129,7 +136,7 @@ def expected_mse(output, target):
     return mse(y, target)
 
 if args.sampler == "uniform":
-    samples_per_batch = 80000
+    samples_per_batch = 1000
     sampler = UniformSampler(samples_per_batch, data)
     iters_per_epoch = int(data.n_train / samples_per_batch)
 else:
@@ -140,18 +147,21 @@ else:
     iters_per_epoch = int(np.ceil(N//maxN) * np.ceil(M//maxM))
     
 t = time.time()
-for epoch in xrange(args.epochs):
+update_interval = 1
+for epoch in range(args.epochs):
     # Training steps
     enc.train()
     iterator = IndexIterator(iters_per_epoch, sampler, n_workers=1, epochs=1)
+    if epoch % update_interval == 0:
+        enc.cached_forward(torch.from_numpy(data.input), torch.from_numpy(data.index), batch_size=80000)
     for sampled_batch in tqdm(iterator):
         sampled_batch, drop = mask_inputs(sampled_batch)
         target = prep_data((sampled_batch["target"] - 1).long())
         input = prep_data(sampled_batch["input"])
         index = prep_data(sampled_batch["index"])
-        enc.index = index
+        #enc.index = index
         optimizer.zero_grad()
-        output = enc(input)
+        output = enc(input, index=index, sampling_index=sampled_batch["sample_ids"])
         l = masked_loss(output, target.squeeze(1), drop)
         l.backward()
         clip_grad_norm_(enc.parameters(), args.clip)
