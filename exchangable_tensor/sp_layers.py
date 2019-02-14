@@ -119,7 +119,7 @@ class SparsePool(nn.Module):
             self.norm = self.norm.to(index.device)
             self.out_size = out_size
         
-        self.norm = torch.zeros_like(self.norm).index_add_(0, index,
+        self.norm = torch.zeros_like(self.norm.to(index.device)).index_add_(0, index,
                                          torch.ones_like(index.float())) + self.eps
         
     def zero_cache(self):
@@ -236,13 +236,15 @@ class SparseExchangeable(nn.Module):
         for i, p in enumerate(self.pooling):
             p.cache_size = int(cache_sizes[i])
             p.zero_cache()
-        for i in np.split(np.arange(nnz), splits):
+        
+        indices = list(np.split(np.arange( (nnz // batch_size) * batch_size ), splits)) + [np.arange( (nnz // batch_size) * batch_size, nnz )]
+        for i in indices:
             for j, p in enumerate(self.pooling):
                 p.update_cache(input.cpu()[i, ...], index.cpu()[i, j])
         pooled = [p.get_cache(index.cpu()[:,i], keep_dims=True) for i, p in enumerate(self.pooling)]
         pooled += [torch.mean(input.cpu(), dim=0).expand_as(input)]
         stacked = torch.cat([input.cpu()] + pooled, dim=1)
-        for i in np.split(np.arange(nnz), splits):
+        for i in indices:
             self._cache[i,...] = self.linear(stacked[i,...].to(self.linear.weight.device)).cpu()
     
     def get_cache(self, idx=None):
@@ -266,7 +268,20 @@ class SparseExchangeable(nn.Module):
                   for i, pool_axis in enumerate(self.pooling)]
         pooled += [torch.mean(input, dim=0).expand_as(input)]
         stacked = torch.cat([input] + pooled, dim=1)
-        return self.linear(stacked)
+        activation = self.linear(stacked)
+        return activation
+
+    def cached_forward(self, input, index, batch_size):
+        self.cache_size = index.shape[0]
+        self.zero_cache()
+        self.update_cache(input, index, batch_size=batch_size)
+        return self.get_cache()
+
+    # def cached_forward(self, input, index, batch_size):
+    #     self.cache_size = index.shape[0]
+    #     self.zero_cache()
+    #     self.update_cache(input, index, batch_size=batch_size)
+    #     return self.get_cache()
 
 class SparseFactorize(nn.Module):
     """
@@ -317,16 +332,10 @@ class SparseSequential(nn.Module):
         with torch.no_grad():
             state = input
             for i, layer in enumerate(self.layers):
-                #print("layer %d" % i)
-                state.detach()
-                if isinstance(layer, SparseExchangeable):
-                    layer.cache_size = index.shape[0]
-                    layer.zero_cache()
-                    layer.update_cache(state, index, batch_size=batch_size)
-                    state = layer.get_cache()
+                if hasattr(layer, "cached_forward"):
+                    state = layer.cached_forward(state, index, batch_size)
                 else:
                     state = layer(state)
-                del layer
             return state
 
 # Not used...
