@@ -81,7 +81,7 @@ class SparsePool(nn.Module):
     CPU memory. A typical forward pass still uses batches on the GPU but pools on the CPU 
     (see SparseExchangable below).
     '''
-    def __init__(self, full_index, out_features, out_size=None, keep_dims=True, eps=1e-9, cache_size=None, axis=None, control=False):
+    def __init__(self, full_index, out_features, out_size=None, keep_dims=True, eps=1e-9, cache_size=None, axis=None, control=False, poly=1, deepset=None):
         super(SparsePool, self).__init__()
         self.eps = eps
         if axis is not None:
@@ -96,6 +96,8 @@ class SparsePool(nn.Module):
         self.output = Variable(torch.zeros((out_size, self.out_features))).to(full_index.device) # TODO: this should be none
         self.norm = Variable(torch.zeros((out_size))).to(full_index.device)
         self.cache_size = cache_size
+        self.poly = poly
+        self.deepset = deepset
 
     @property
     def index(self):
@@ -150,6 +152,14 @@ class SparsePool(nn.Module):
         else:
             return output
 
+    def mean(self, input, index, ind_max):
+        output = torch.zeros((ind_max, input.shape[1])).to(input.device).index_add_(0, 
+                                                          index, 
+                                                          input)
+        norm = torch.zeros(ind_max).to(input.device).index_add_(0, index, torch.ones_like(index).float()) + self.eps
+        
+        return output / norm[:, None].float()
+    
     def forward(self, input, keep_dims=None, cached_activations=None, index=None):
         '''
         Regular forward pass.
@@ -166,12 +176,19 @@ class SparsePool(nn.Module):
         if keep_dims is None:
             keep_dims = self.keep_dims
         ind_max = int(index.max() + 1)
-        output = torch.zeros((ind_max, input.shape[1])).to(input.device).index_add_(0, 
-                                                          index, 
-                                                          input)
-        norm = torch.zeros(ind_max).to(input.device).index_add_(0, index, torch.ones_like(index).float()) + self.eps
         
-        output = output / norm[:, None].float()
+        if self.deepset is not None:
+            input = self.deepset(input)
+        
+        if self.poly > 1:
+            input_poly = torch.zeros((input.shape[0], input.shape[1] * self.poly))
+            polys = [torch.ones_like(input).to(input.device), input]
+            for p in range(2, self.poly + 1):
+                # Chebyshev polynomials
+                polys.append(2 * input * polys[-1] - polys[-2])
+            input = torch.cat(polys[1:], dim=1)
+
+        output = self.mean(input, index, ind_max)
         if cached_activations is not None and self.training:
             with torch.no_grad():
                 cached_subsample = torch.zeros_like(output).index_add_(0, 
@@ -213,11 +230,13 @@ class SparseExchangeable(nn.Module):
     """
     Sparse exchangable matrix layer
     """
-    def __init__(self, in_features, out_features, index, bias=True, cache_size=None, use_control_variates=False):
+    def __init__(self, in_features, out_features, index, bias=True, cache_size=None, use_control_variates=False, poly_pool=1, deepset=None):
         super(SparseExchangeable, self).__init__()
+        if not isinstance(deepset, list):
+            deepset = [deepset] * index.shape[1]
         self._index = index
-        self.pooling = nn.ModuleList([SparsePool(index[:, i], in_features) for i in range(index.shape[1])])
-        self.linear = nn.Linear(in_features=in_features * (index.shape[1] + 2),
+        self.pooling = nn.ModuleList([SparsePool(index[:, i], in_features, poly=poly_pool, deepset=deepset[i]) for i in range(index.shape[1])])
+        self.linear = nn.Linear(in_features=in_features * 2 + in_features * poly_pool * (index.shape[1]),
                                 out_features=out_features,
                                 bias=bias)
         self.in_features = in_features
